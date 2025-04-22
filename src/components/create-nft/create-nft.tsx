@@ -17,6 +17,7 @@ import { Warning } from '@/components/icons/warning';
 import { Unlocked } from '@/components/icons/unlocked';
 import Avatar from '@/components/ui/avatar';
 import { Mistral } from '@mistralai/mistralai';
+import DeploymentAnimation from '@/components/deployment-animation/deployment-animation';
 
 //images
 import AuthorImage from '@/assets/images/author.jpg';
@@ -97,6 +98,9 @@ export default function CreateNFT() {
   let [progressMessage, setProgressMessage] = useState('');
   let [ocrRawText, setOcrRawText] = useState('');
   let [ocrError, setOcrError] = useState<string | null>(null);
+  let [deploymentStage, setDeploymentStage] = useState<string | null>(null);
+  let [deploymentComplete, setDeploymentComplete] = useState(false);
+  let [animationProgress, setAnimationProgress] = useState(0);
 
   const handleImageSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -119,6 +123,8 @@ export default function CreateNFT() {
     setExtractedInfo(null);
     setOcrRawText('');
     setOcrError(null);
+    setDeploymentStage(null);
+    setDeploymentComplete(false);
   };
 
   const extractMetadata = (file: File) => {
@@ -263,13 +269,77 @@ export default function CreateNFT() {
     }
   };
 
-  const handleDeployDID = () => {
+  const handleDeployDID = async () => {
+    setDeploymentStage('verifying');
+    setDeploymentComplete(false);
+    setAnimationProgress(0);
+    
+    // First stage: Verifying ID
+    const verifyingDuration = 3000;
+    const verifyingStart = Date.now();
+    const verifyingInterval = setInterval(() => {
+      const elapsed = Date.now() - verifyingStart;
+      const progress = Math.min(elapsed / verifyingDuration * 100, 100);
+      setAnimationProgress(progress);
+      if (progress >= 100) clearInterval(verifyingInterval);
+    }, 50);
+    
+    await new Promise(resolve => setTimeout(resolve, verifyingDuration));
+    clearInterval(verifyingInterval);
+    
+    // Second stage: Minting
+    setDeploymentStage('minting');
+    setAnimationProgress(0);
+    
+    const mintingDuration = 4000;
+    const mintingStart = Date.now();
+    const mintingInterval = setInterval(() => {
+      const elapsed = Date.now() - mintingStart;
+      const progress = Math.min(elapsed / mintingDuration * 100, 100);
+      setAnimationProgress(progress);
+      if (progress >= 100) clearInterval(mintingInterval);
+    }, 50);
+    
+    await new Promise(resolve => setTimeout(resolve, mintingDuration));
+    clearInterval(mintingInterval);
+    
+    // Final stage: Wrapping up
+    setDeploymentStage('finishing');
+    setAnimationProgress(0);
+    
+    const finishingDuration = 3000;
+    const finishingStart = Date.now();
+    const finishingInterval = setInterval(() => {
+      const elapsed = Date.now() - finishingStart;
+      const progress = Math.min(elapsed / finishingDuration * 100, 100);
+      setAnimationProgress(progress);
+      if (progress >= 100) clearInterval(finishingInterval);
+    }, 50);
+    
+    await new Promise(resolve => setTimeout(resolve, finishingDuration));
+    clearInterval(finishingInterval);
+    
+    // Complete
+    setDeploymentComplete(true);
     console.log("Deploying DID with information:", extractedInfo);
-    // Here you would implement the DID deployment logic
+  };
+
+  const handleCancelDeployment = () => {
+    setDeploymentStage(null);
+    setDeploymentComplete(false);
   };
 
   return (
     <>
+      {/* Full-screen animation overlay */}
+      <DeploymentAnimation 
+        deploymentStage={deploymentStage}
+        deploymentComplete={deploymentComplete}
+        animationProgress={animationProgress}
+        onCancel={handleCancelDeployment}
+        onReset={handleResetImage}
+      />
+      
       <div className="mx-auto w-full sm:pt-0 lg:px-8 xl:px-10 2xl:px-0">
         <div className="mb-6 grid grid-cols-3 gap-12 sm:mb-10">
           <div className="col-span-3 flex items-center justify-between lg:col-span-2">
