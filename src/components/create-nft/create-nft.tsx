@@ -18,6 +18,7 @@ import { Unlocked } from '@/components/icons/unlocked';
 import Avatar from '@/components/ui/avatar';
 import { Mistral } from '@mistralai/mistralai';
 import DeploymentAnimation from '@/components/deployment-animation/deployment-animation';
+import WalletConnect from '@/components/wallet/wallet-connect';
 
 //images
 import AuthorImage from '@/assets/images/author.jpg';
@@ -101,6 +102,13 @@ export default function CreateNFT() {
   let [deploymentStage, setDeploymentStage] = useState<string | null>(null);
   let [deploymentComplete, setDeploymentComplete] = useState(false);
   let [animationProgress, setAnimationProgress] = useState(0);
+  let [walletConnected, setWalletConnected] = useState(false);
+  let [walletAddress, setWalletAddress] = useState<string | null>(null);
+
+  const handleWalletChange = (connected: boolean, address: string | null) => {
+    setWalletConnected(connected);
+    setWalletAddress(address);
+  };
 
   const handleImageSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -192,7 +200,7 @@ export default function CreateNFT() {
   };
 
   const extractIDInformation = async () => {
-    if (!selectedFile || !selectedImage) return;
+    if (!selectedFile || !selectedImage || !walletConnected) return;
     
     setIsLoading(true);
     setProgressMessage('Processing image...');
@@ -270,6 +278,11 @@ export default function CreateNFT() {
   };
 
   const handleDeployDID = async () => {
+    if (!walletConnected) {
+      alert("Please connect your wallet to deploy your DID");
+      return;
+    }
+    
     setDeploymentStage('verifying');
     setDeploymentComplete(false);
     setAnimationProgress(0);
@@ -322,6 +335,7 @@ export default function CreateNFT() {
     // Complete
     setDeploymentComplete(true);
     console.log("Deploying DID with information:", extractedInfo);
+    console.log("Wallet address:", walletAddress);
   };
 
   const handleCancelDeployment = () => {
@@ -346,6 +360,9 @@ export default function CreateNFT() {
             <h2 className="text-lg font-medium uppercase tracking-wider text-gray-900 dark:text-white sm:text-2xl">
               Create Digital Identity
             </h2>
+            <div className="flex items-center">
+              <WalletConnect onWalletChange={handleWalletChange} />
+            </div>
           </div>
         </div>
 
@@ -415,6 +432,14 @@ export default function CreateNFT() {
                             <span className="block text-base font-medium text-gray-900 dark:text-white">{extractedInfo.metadata.created}</span>
                           </div>
                         )}
+                        {walletAddress && (
+                          <div>
+                            <span className="block text-sm font-medium text-gray-500 dark:text-gray-400">Wallet Address</span>
+                            <span className="block text-base font-medium text-gray-900 dark:text-white">
+                              {`${walletAddress.slice(0, 6)}...${walletAddress.slice(-4)}`}
+                            </span>
+                          </div>
+                        )}
                       </div>
                     </div>
                   </div>
@@ -432,8 +457,12 @@ export default function CreateNFT() {
                   </div>
                   
                   <div className="flex items-center justify-between">
-                    <Button shape="rounded" onClick={handleDeployDID}>
-                      Deploy DID
+                    <Button 
+                      shape="rounded" 
+                      onClick={handleDeployDID}
+                      disabled={!walletConnected}
+                    >
+                      {walletConnected ? "Deploy DID" : "Connect Wallet to Deploy"}
                     </Button>
                     <Button shape="rounded" variant="ghost" onClick={handleResetImage}>
                       Start Over
@@ -452,6 +481,20 @@ export default function CreateNFT() {
                     style={{ maxHeight: '400px' }}
                   />
                 </div>
+                {!walletConnected && (
+                  <div className="mb-4 rounded-md bg-yellow-50 p-4 dark:bg-yellow-900/20">
+                    <div className="flex">
+                      <div className="flex-shrink-0">
+                        <Warning className="h-5 w-5 text-yellow-600 dark:text-yellow-500" />
+                      </div>
+                      <div className="ml-3">
+                        <p className="text-sm text-yellow-700 dark:text-yellow-400">
+                          Connect your wallet to extract ID information and create your digital identity.
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+                )}
                 {ocrError && (
                   <div className="mb-4 rounded-md bg-red-50 p-4 dark:bg-red-900/20">
                     <p className="text-sm text-red-700 dark:text-red-400">{ocrError}</p>
@@ -461,9 +504,14 @@ export default function CreateNFT() {
                   <Button 
                     shape="rounded" 
                     onClick={extractIDInformation}
-                    disabled={isLoading}
+                    disabled={isLoading || !walletConnected}
                   >
-                    {isLoading ? progressMessage || "Processing..." : "Extract Information"}
+                    {isLoading 
+                      ? progressMessage || "Processing..." 
+                      : !walletConnected 
+                        ? "Connect Wallet First" 
+                        : "Extract Information"
+                    }
                   </Button>
                   <Button shape="rounded" variant="ghost" onClick={handleResetImage}>
                     Reselect Image
