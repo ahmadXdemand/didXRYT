@@ -6,7 +6,7 @@ import { FlashIcon } from '@/components/icons/flash';
 import SearchButton from '@/components/search/button';
 import ActiveLink from '@/components/ui/links/active-link';
 import Hamburger from '@/components/ui/hamburger';
-import WalletConnect from '@/components/nft/wallet-connect';
+// import WalletConnect from '@/components/nft/wallet-connect';
 import { MenuItems } from '@/layouts/sidebar/_layout-menu';
 import { useIsMounted } from '@/lib/hooks/use-is-mounted';
 import { useBreakpoint } from '@/lib/hooks/use-breakpoint';
@@ -57,7 +57,7 @@ function HeaderRightArea() {
           </div>
         )}
         <NotificationButton />
-        <WalletConnect />
+        {/* <WalletConnect /> */}
       </div>
 
       <div className="flex items-center lg:hidden">

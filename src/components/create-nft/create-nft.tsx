@@ -1,16 +1,9 @@
 'use client';
 
-import { useState } from 'react';
-import { Transition } from '@/components/ui/transition';
-import { Listbox } from '@/components/ui/listbox';
-import Image from '@/components/ui/image';
+import { useState, useEffect, useRef } from 'react';
+
 import Button from '@/components/ui/button';
-import { Switch } from '@/components/ui/switch';
-import Input from '@/components/ui/forms/input';
-import Textarea from '@/components/ui/forms/textarea';
 import InputLabel from '@/components/ui/input-label';
-import ToggleBar from '@/components/ui/toggle-bar';
-import { ChevronDown } from '@/components/icons/chevron-down';
 import { Ethereum } from '@/components/icons/ethereum';
 import { Flow } from '@/components/icons/flow';
 import { Warning } from '@/components/icons/warning';
@@ -18,7 +11,13 @@ import { Unlocked } from '@/components/icons/unlocked';
 import Avatar from '@/components/ui/avatar';
 import { Mistral } from '@mistralai/mistralai';
 import DeploymentAnimation from '@/components/deployment-animation/deployment-animation';
-import WalletConnect from '@/components/wallet/wallet-connect';
+import CreationProgress, { CreationStep } from '@/components/progress/creation-progress';
+import { ethers } from 'ethers';
+import { useWallet } from '@/lib/hooks/use-wallet';
+import { ArrowUp } from '@/components/icons/arrow-up';
+import Web3 from 'web3';
+
+import { useDropzone } from 'react-dropzone';
 
 //images
 import AuthorImage from '@/assets/images/author.jpg';
@@ -26,35 +25,22 @@ import NFT1 from '@/assets/images/nft/nft-1.jpg';
 import PriceType from '@/components/create-nft/price-types-props';
 import cn from '@/utils/cn';
 
-// ID Information interface
-interface IDInformation {
-  fullName: string;
-  dateOfBirth: string;
-  gender: string;
-  idNumber: string;
-  metadata: {
-    fileType: string;
-    fileSize: string;
-    dimensions?: string;
-    created?: string;
-  };
-  rawText?: string;
-}
+// Import types
+import { IDInformation } from './types';
 
-const BlockchainOptions = [
-  {
-    id: 1,
-    name: 'Ethereum',
-    value: 'ethereum',
-    icon: <Ethereum />,
-  },
-  {
-    id: 2,
-    name: 'Flow',
-    value: 'flow',
-    icon: <Flow />,
-  },
-];
+// Import components
+import IdDocumentUploader from './IdDocumentUploader';
+import IdInformationDisplay from './IdInformationDisplay';
+import CameraCapture from './CameraCapture';
+
+// Import services
+import { 
+  startCameraStream, 
+  stopCameraStream, 
+  captureImageFromVideo 
+} from './CameraService';
+import { extractIDInformationFromImage } from './OcrService';
+import { mintDidToken, createDidMetadata } from './BlockchainService';
 
 // Common ID patterns for extraction
 const ID_PATTERNS = {
@@ -85,15 +71,63 @@ const ID_PATTERNS = {
     /dl\.\s+([A-Z0-9]+)/i,  // DL. W9802660
   ],
 };
+const web3 = new Web3('http://3.15.178.121:8030/rpc/ethrpc');
+// NFT Contract Constants
+const CONTRACT_ADDRESS = "0x66332e60b24BB4C729A2Be07Ab733C26242A5aAD";
+
+// ✅ Only the mint function ABI
+const CONTRACT_ABI = [
+  {
+    "inputs": [
+      {
+        "internalType": "string",
+        "name": "tokenURI",
+        "type": "string"
+      }
+    ],
+    "name": "mint",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  }
+];
+
+// ✅ Placeholder Token URI - will be replaced with actual metadata
+const TOKEN_URI = "ipfs://QmYoursHere/metadata.json";
+
+// Define BlockchainOptions locally since it uses icon components
+const BlockchainOptions = [
+  {
+    id: 1,
+    name: 'Ethereum',
+    value: 'ethereum',
+    icon: <Ethereum />,
+  },
+  {
+    id: 2,
+    name: 'Flow',
+    value: 'flow',
+    icon: <Flow />,
+  },
+];
 
 export default function CreateNFT() {
+  const { address: walletAddress, isConnected, provider, connect } = useWallet();
+  
   let [publish, setPublish] = useState(true);
   let [explicit, setExplicit] = useState(false);
   let [unlocked, setUnlocked] = useState(false);
   let [priceType, setPriceType] = useState('fixed');
   let [blockchain, setBlockChain] = useState(BlockchainOptions[0]);
-  let [selectedImage, setSelectedImage] = useState<string | null>(null);
-  let [selectedFile, setSelectedFile] = useState<File | null>(null);
+  
+  // ID document image state
+  let [selectedIdImage, setSelectedIdImage] = useState<string | null>(null);
+  let [selectedIdFile, setSelectedIdFile] = useState<File | null>(null);
+  
+  // Verification selfie image state
+  let [selfieImage, setSelfieImage] = useState<string | null>(null);
+  let [selfieFile, setSelfieFile] = useState<File | null>(null);
+  
   let [extractedInfo, setExtractedInfo] = useState<IDInformation | null>(null);
   let [isLoading, setIsLoading] = useState(false);
   let [progressMessage, setProgressMessage] = useState('');
@@ -103,189 +137,302 @@ export default function CreateNFT() {
   let [deploymentComplete, setDeploymentComplete] = useState(false);
   let [animationProgress, setAnimationProgress] = useState(0);
   let [walletConnected, setWalletConnected] = useState(false);
-  let [walletAddress, setWalletAddress] = useState<string | null>(null);
+  let [mintStatus, setMintStatus] = useState<string | null>(null);
+  let [txHash, setTxHash] = useState<string | null>(null);
+  
+  // Track creation steps progress
+  let [currentStep, setCurrentStep] = useState<CreationStep>(CreationStep.WALLET_CONNECTION);
+  let [overallProgress, setOverallProgress] = useState(0);
 
-  const handleWalletChange = (connected: boolean, address: string | null) => {
-    setWalletConnected(connected);
-    setWalletAddress(address);
+  let [showCamera, setShowCamera] = useState(false);
+  let [cameraStream, setCameraStream] = useState<MediaStream | null>(null);
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+
+  // Update step and progress based on current application state
+  useEffect(() => {
+    if (isConnected) {
+      if (currentStep === CreationStep.WALLET_CONNECTION) {
+        setCurrentStep(CreationStep.IMAGE_SELECTION);
+        setOverallProgress(10);
+      }
+      setWalletConnected(true);
+    } else {
+      setCurrentStep(CreationStep.WALLET_CONNECTION);
+      setOverallProgress(0);
+      setWalletConnected(false);
+    }
+  }, [isConnected, currentStep]);
+
+  // Update step and progress when image is selected
+  useEffect(() => {
+    if (selectedIdImage && walletConnected) {
+      if (currentStep === CreationStep.IMAGE_SELECTION) {
+        setCurrentStep(CreationStep.EXTRACTION);
+        setOverallProgress(20);
+      }
+    } else if (walletConnected) {
+      setCurrentStep(CreationStep.IMAGE_SELECTION);
+      setOverallProgress(10);
+    }
+  }, [selectedIdImage, walletConnected, currentStep]);
+
+  // Update step and progress when info is extracted
+  useEffect(() => {
+    if (extractedInfo && walletConnected) {
+      if (currentStep === CreationStep.EXTRACTION) {
+        setCurrentStep(CreationStep.VERIFICATION);
+        setOverallProgress(40);
+      }
+    } else if (selectedIdImage && walletConnected) {
+      setCurrentStep(CreationStep.EXTRACTION);
+      setOverallProgress(20);
+    }
+  }, [extractedInfo, selectedIdImage, walletConnected, currentStep]);
+
+  // Update step and progress when deployment stage changes
+  useEffect(() => {
+    if (deploymentStage === 'verifying' && extractedInfo) {
+      setCurrentStep(CreationStep.VERIFICATION);
+      setOverallProgress(60);
+    } else if (deploymentStage === 'minting' && extractedInfo) {
+      setCurrentStep(CreationStep.MINTING);
+      setOverallProgress(80);
+    } else if (deploymentStage === 'finishing' && extractedInfo) {
+      setCurrentStep(CreationStep.FINALIZATION);
+      setOverallProgress(95);
+    } else if (deploymentComplete && extractedInfo) {
+      setCurrentStep(CreationStep.COMPLETED);
+      setOverallProgress(100);
+    }
+  }, [deploymentStage, deploymentComplete, extractedInfo]);
+
+  // Initialize camera
+  const handleStartCamera = async () => {
+    try {
+      // First set showCamera to true to ensure video element is rendered
+      setShowCamera(true);
+      
+      // Wait for the video element to be available in the DOM
+      await new Promise(resolve => setTimeout(resolve, 100));
+      ;
+      // Check if video ref is available
+      if (!videoRef.current) {
+        console.error("Video element not available after rendering");
+        throw new Error("Video element not found");
+      }
+      
+      const stream = await startCameraStream();
+      setCameraStream(stream);
+      
+      // Set video source
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream;
+        console.log("Video element updated with camera stream");
+      } else {
+        console.error("Video ref is null after stream initialization");
+        throw new Error("Video element not found after getting camera stream");
+      }
+    } catch (error) {
+      console.error("Error accessing camera:", error);
+      
+      // Try to provide more specific error messages
+      let errorMessage = "Could not access camera. Please check your browser permissions.";
+      if (error instanceof Error) {
+        errorMessage = error.message;
+      }
+      
+      alert(errorMessage);
+      
+      // Close camera UI if there was an error
+      setShowCamera(false);
+      
+      // Add a fallback option to upload an image instead of using the camera
+      handleUploadSelfie();
+    }
   };
-
-  const handleImageSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (file) {
+  
+  // Stop camera stream
+  const handleStopCamera = () => {
+    if (cameraStream) {
+      cameraStream.getTracks().forEach(track => track.stop());
+    }
+    setCameraStream(null);
+    setShowCamera(false);
+  };
+  
+  // Capture image from camera
+  const handleCaptureImage = async () => {
+    
+    if (!videoRef.current || !canvasRef.current) {
+      console.error("Video or canvas ref is null");
+      // alert("Camera capture failed. Please try again or upload a verification photo instead.");
+      return;
+    }
+    
+    try {
+      // console.log("Attempting to capture image from video element");
+      
+      if (!videoRef.current.videoWidth || !videoRef.current.videoHeight) {
+        console.error("Video dimensions not available. Video might not be ready.");
+        // alert("Video stream is not ready yet. Please wait a moment and try again.");
+        return;
+      }
+      
+      const file = await captureImageFromVideo(videoRef.current, canvasRef.current);
+      
+      // Set the selfie file and create URL
+      setSelfieFile(file);
+      
+      // Revoke previous URL if exists
+      if (selfieImage) {
+        URL.revokeObjectURL(selfieImage);
+      }
+      
+      // Create and set new URL
       const imageUrl = URL.createObjectURL(file);
-      setSelectedImage(imageUrl);
-      setSelectedFile(file);
-      setExtractedInfo(null);
-      setOcrRawText('');
-      setOcrError(null);
+      setSelfieImage(imageUrl);
+      console.log("Selfie image set successfully");
+      
+      // Close camera
+      handleStopCamera();
+    } catch (error) {
+      console.error("Error capturing image:", error);
+      alert("Failed to capture image. Please try again or upload a verification photo instead.");
+      
+      // Offer manual upload as fallback
+      handleUploadSelfie();
     }
   };
 
-  const handleResetImage = () => {
-    if (selectedImage) {
-      URL.revokeObjectURL(selectedImage);
+  // Handle uploading a selfie manually instead of using the camera
+  const handleUploadSelfie = () => {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = 'image/*';
+    input.onchange = (e) => {
+      const file = (e.target as HTMLInputElement).files?.[0];
+      if (file) {
+        // Revoke previous URL if exists
+        if (selfieImage) {
+          URL.revokeObjectURL(selfieImage);
+        }
+        
+        const imageUrl = URL.createObjectURL(file);
+        setSelfieFile(file);
+        setSelfieImage(imageUrl);
+      }
+    };
+    input.click();
+  };
+
+  // Reset selfie
+  const handleResetSelfie = () => {
+    if (selfieImage) {
+      URL.revokeObjectURL(selfieImage);
     }
-    setSelectedImage(null);
-    setSelectedFile(null);
+    setSelfieFile(null);
+    setSelfieImage(null);
+  };
+
+  // Handle ID image selection
+  const handleIdImageSelect = (file: File) => {
+    const imageUrl = URL.createObjectURL(file);
+    setSelectedIdImage(imageUrl);
+    setSelectedIdFile(file);
+    setExtractedInfo(null);
+    setOcrRawText('');
+    setOcrError(null);
+  };
+
+  // Reset all images and data
+  const handleResetImage = () => {
+    if (selectedIdImage) {
+      URL.revokeObjectURL(selectedIdImage);
+    }
+    if (selfieImage) {
+      URL.revokeObjectURL(selfieImage);
+    }
+    setSelectedIdImage(null);
+    setSelectedIdFile(null);
+    setSelfieImage(null);
+    setSelfieFile(null);
     setExtractedInfo(null);
     setOcrRawText('');
     setOcrError(null);
     setDeploymentStage(null);
     setDeploymentComplete(false);
-  };
-
-  const extractMetadata = (file: File) => {
-    const metadata = {
-      fileType: file.type,
-      fileSize: formatFileSize(file.size),
-      created: new Date(file.lastModified).toLocaleString(),
-    };
-    return metadata;
-  };
-
-  const formatFileSize = (bytes: number): string => {
-    if (bytes === 0) return '0 Bytes';
-    const k = 1024;
-    const sizes = ['Bytes', 'KB', 'MB', 'GB'];
-    const i = Math.floor(Math.log(bytes) / Math.log(k));
-    return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
-  };
-
-  const extractPatternFromText = (text: string, patterns: RegExp[]): string => {
-    for (const pattern of patterns) {
-      const match = text.match(pattern);
-      if (match && match[1]) {
-        return match[1].trim();
-      }
-    }
-    return '';
-  };
-
-  const processOCRResult = (text: string): IDInformation => {
-    // Extract information using regex patterns
-    let fullName = extractPatternFromText(text, ID_PATTERNS.namePatterns) || 'Not detected';
     
-    // Special handling for name patterns that capture first and last name separately
-    const nameMatch = text.match(/(?:ln|last name)[\s]+([A-Za-z\s.-]+)[\s]+(?:fn|first name)[\s]+([A-Za-z\s.-]+)/i) || 
-                     text.match(/(?:fn|first name)[\s]+([A-Za-z\s.-]+)[\s]+(?:ln|last name)[\s]+([A-Za-z\s.-]+)/i);
-    
-    if (nameMatch && nameMatch[1] && nameMatch[2]) {
-      // If we have a match with first and last name separately, combine them
-      if (nameMatch[0].toLowerCase().includes('ln')) {
-        // Format: LN LastName FN FirstName
-        fullName = `${nameMatch[2]} ${nameMatch[1]}`;
-      } else {
-        // Format: FN FirstName LN LastName
-        fullName = `${nameMatch[1]} ${nameMatch[2]}`;
-      }
+    // Reset progress to appropriate step based on wallet connection
+    if (walletConnected) {
+      setCurrentStep(CreationStep.IMAGE_SELECTION);
+      setOverallProgress(10);
+    } else {
+      setCurrentStep(CreationStep.WALLET_CONNECTION);
+      setOverallProgress(0);
     }
-    
-    const dateOfBirth = extractPatternFromText(text, ID_PATTERNS.dobPatterns) || 'Not detected';
-    const gender = extractPatternFromText(text, ID_PATTERNS.genderPatterns) || 'Not detected';
-    const idNumber = extractPatternFromText(text, ID_PATTERNS.idNumberPatterns) || 'Not detected';
-
-    if (!selectedFile) {
-      throw new Error("No file selected");
-    }
-
-    return {
-      fullName,
-      dateOfBirth,
-      gender,
-      idNumber,
-      metadata: extractMetadata(selectedFile),
-      rawText: text
-    };
   };
 
-  const extractIDInformation = async () => {
-    if (!selectedFile || !selectedImage || !walletConnected) return;
+  // Extract ID information from the uploaded image
+  const handleExtractIDInformation = async () => {
+    if (!selectedIdFile || !selectedIdImage || !walletConnected) return;
     
     setIsLoading(true);
     setProgressMessage('Processing image...');
     setOcrError(null);
     
     try {
-      // Upload the image to Pinata
-      setProgressMessage('Uploading image to IPFS via Pinata...');
+      // Update progress
+      setCurrentStep(CreationStep.EXTRACTION);
+      setOverallProgress(25);
       
-      const formData = new FormData();
-      formData.append('file', selectedFile);
+      setProgressMessage('Uploading image and processing with OCR...');
       
-      const pinataResponse = await fetch('/api/pinata', {
-        method: 'POST',
-        body: formData,
-      });
+      // Process the ID document through OCR
+      const result = await extractIDInformationFromImage(selectedIdFile);
       
-      if (!pinataResponse.ok) {
-        throw new Error('Failed to upload image to Pinata');
-      }
+      setOcrRawText(result.rawText);
+      setExtractedInfo(result.extractedInfo);
       
-      const pinataData = await pinataResponse.json();
-      const imageUrl = pinataData.url;
-      
-      setProgressMessage('Sending image to Mistral OCR service...');
-      
-      // Initialize Mistral client
-      const apiKey = "immlxcv2yiyweZ74qNNN0xXe4vqY37FE";
-      const client = new Mistral({apiKey: apiKey});
-      
-      // Call the Mistral OCR API
-      const ocrResponse = await client.ocr.process({
-        model: "mistral-ocr-latest",
-        document: {
-          type: "image_url",
-          imageUrl: imageUrl,
-        }
-      });
-      
-      setProgressMessage('Processing OCR results...');
-      
-      // Extract text from the OCR result based on the actual response format
-      const ocrData = ocrResponse as any;
-      
-      // Check if we have pages with markdown content
-      if (ocrData.pages && ocrData.pages.length > 0 && ocrData.pages[0].markdown) {
-        // Extract text from markdown format
-        const markdownText = ocrData.pages[0].markdown;
-        
-        // Convert markdown to plain text by removing markdown syntax
-        const extractedText = markdownText
-          .replace(/#{1,6}\s/g, '') // Remove headers
-          .replace(/\*\*/g, '') // Remove bold
-          .replace(/\*/g, '') // Remove italic
-          .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1') // Replace links with text
-          .replace(/\n+/g, '\n') // Normalize newlines
-          .trim();
-        
-        setOcrRawText(extractedText);
-        
-        // Process the extracted text to find ID information
-        const processedData = processOCRResult(extractedText);
-        setExtractedInfo(processedData);
-      } else {
-        throw new Error('No text was extracted from the image');
-      }
-      
+      // Update progress to completed extraction
+      setOverallProgress(40);
     } catch (error) {
       console.error("Error extracting information:", error);
       setOcrError(error instanceof Error ? error.message : 'Unknown error occurred during OCR processing');
+      
+      // Reset progress
+      if (selectedIdImage && walletConnected) {
+        setCurrentStep(CreationStep.EXTRACTION);
+        setOverallProgress(20);
+      }
     } finally {
       setIsLoading(false);
       setProgressMessage('');
     }
   };
 
+  // Deploy DID to blockchain
   const handleDeployDID = async () => {
     if (!walletConnected) {
       alert("Please connect your wallet to deploy your DID");
       return;
     }
     
+    // Verify that both ID image and selfie are present
+    if (!selectedIdImage || !selfieImage || !extractedInfo) {
+      alert("Both ID document and verification selfie are required");
+      return;
+    }
+    
     setDeploymentStage('verifying');
     setDeploymentComplete(false);
     setAnimationProgress(0);
+    setMintStatus(null);
+    setTxHash(null);
+    
+    // Update progress
+    setCurrentStep(CreationStep.VERIFICATION);
+    setOverallProgress(60);
     
     // First stage: Verifying ID
     const verifyingDuration = 3000;
@@ -304,21 +451,121 @@ export default function CreateNFT() {
     setDeploymentStage('minting');
     setAnimationProgress(0);
     
-    const mintingDuration = 4000;
-    const mintingStart = Date.now();
-    const mintingInterval = setInterval(() => {
-      const elapsed = Date.now() - mintingStart;
-      const progress = Math.min(elapsed / mintingDuration * 100, 100);
-      setAnimationProgress(progress);
-      if (progress >= 100) clearInterval(mintingInterval);
-    }, 50);
+    // Update progress
+    setCurrentStep(CreationStep.MINTING);
+    setOverallProgress(80);
     
-    await new Promise(resolve => setTimeout(resolve, mintingDuration));
-    clearInterval(mintingInterval);
+    try {
+      // Actual minting process
+      if (!walletAddress) {
+        throw new Error("No wallet connected");
+      }
+      
+      setMintStatus("Preparing transaction...");
+      
+      // In a real implementation, we would upload both images to IPFS
+      // and create metadata with those URLs
+      // For demonstration, we're using placeholder data
+      const idImageUrl = "ipfs://placeholder-id-image";
+      const selfieImageUrl = "ipfs://placeholder-selfie";
+      
+      // Create metadata for the DID token
+      const metadata = createDidMetadata(
+        extractedInfo, 
+        idImageUrl, 
+        selfieImageUrl, 
+        walletAddress
+      );
+      
+      setMintStatus("Minting in progress...");
+      
+      // Use the provider from the useWallet hook directly
+     
+      
+      try {
+        //don't remove this line 
+        const provideer = new ethers.providers.Web3Provider(window.ethereum);//don't remove this line 
+        // const signer = provider.getSigner();
+    
+        // Mint the token
+        
+        const { hash } = await mintDidToken(provideer, metadata);
+        setMintStatus("Transaction submitted, waiting for confirmation...");
+        setTxHash(hash);
+       
+            const receipt = await web3.eth.getTransactionReceipt(hash);
+            if (!receipt) {
+              throw new Error('Transaction not mined yet or hash is invalid.');
+              
+            }
+            const mintEventABI = {
+              anonymous: false,
+              inputs: [
+                { indexed: true, name: 'to', type: 'address' },
+                { indexed: true, name: 'tokenId', type: 'uint256' },
+                { indexed: false, name: 'tokenURI', type: 'string' }
+              ],
+              name: 'Mint',
+              type: 'event'
+            };
+            
+            const mintEventSig = web3.utils.sha3('Mint(address,uint256,string)');
+        
+            for (const log of receipt.logs) {
+              if (log.topics[0] === mintEventSig) {
+                const decoded = web3.eth.abi.decodeLog(
+                  mintEventABI.inputs,
+                  log.data,
+                  log.topics.slice(1)
+                );
+                console.log('✅ Mint event found:\n', decoded);
+                
+              }
+            }
+        
+            // throw new Error('❌ No Mint event found in this transaction.');
+        
+          
+       
+        
+        // In a real app, we would wait for transaction confirmation
+        setMintStatus("✅ Mint successful!");
+        
+        // Complete the minting animation
+        const remainingTime = 2000; // Give some time to show success message
+        const mintingStart = Date.now();
+        const mintingInterval = setInterval(() => {
+          const elapsed = Date.now() - mintingStart;
+          const progress = Math.min(elapsed / remainingTime * 100, 100);
+          setAnimationProgress(progress);
+          if (progress >= 100) clearInterval(mintingInterval);
+        }, 50);
+        
+        await new Promise(resolve => setTimeout(resolve, remainingTime));
+        clearInterval(mintingInterval);
+      } catch (err) {
+        console.error("Contract interaction error:", err);
+        throw err;
+      }
+      
+    } catch (error) {
+      console.error("Minting error:", error);
+      setMintStatus(`❌ Mint failed: ${error instanceof Error ? error.message : "Unknown error"}`);
+      
+      // Show error for a moment
+      await new Promise(resolve => setTimeout(resolve, 2000));
+      
+      // Complete the animation anyway to move to the next stage
+      setAnimationProgress(100);
+    }
     
     // Final stage: Wrapping up
     setDeploymentStage('finishing');
     setAnimationProgress(0);
+    
+    // Update progress
+    setCurrentStep(CreationStep.FINALIZATION);
+    setOverallProgress(95);
     
     const finishingDuration = 3000;
     const finishingStart = Date.now();
@@ -331,17 +578,69 @@ export default function CreateNFT() {
     
     await new Promise(resolve => setTimeout(resolve, finishingDuration));
     clearInterval(finishingInterval);
-    
+    debugger
     // Complete
     setDeploymentComplete(true);
-    console.log("Deploying DID with information:", extractedInfo);
+    
+    // Update progress to completed
+    setCurrentStep(CreationStep.COMPLETED);
+    setOverallProgress(100);
+    
+    console.log("Deployed DID with information:", extractedInfo);
     console.log("Wallet address:", walletAddress);
+    if (txHash) {
+      console.log("Transaction hash:", txHash);
+    }
   };
 
+  // Cancel deployment process
   const handleCancelDeployment = () => {
     setDeploymentStage(null);
     setDeploymentComplete(false);
+    
+    // Reset progress to appropriate step
+    if (extractedInfo && walletConnected) {
+      setCurrentStep(CreationStep.VERIFICATION);
+      setOverallProgress(40);
+    }
   };
+
+  // File upload functionality with react-dropzone
+  const { getRootProps, getInputProps, isDragActive, isDragAccept } = useDropzone({
+    accept: {
+      'image/*': ['.jpeg', '.jpg', '.png']
+    },
+    maxFiles: 1,
+    onDrop: (acceptedFiles) => {
+      const file = acceptedFiles[0];
+      if (file) {
+        setSelectedIdFile(file);
+        setSelectedIdImage(URL.createObjectURL(file));
+        setExtractedInfo(null);
+        setOcrRawText('');
+        setOcrError(null);
+      }
+    }
+  });
+
+  // Clean up any remaining handlers or listeners
+  useEffect(() => {
+    return () => {
+      // Clean up camera stream when component unmounts
+      if (cameraStream) {
+        cameraStream.getTracks().forEach(track => track.stop());
+        setCameraStream(null);
+      }
+      
+      // Clean up any object URLs we've created
+      if (selfieImage) {
+        URL.revokeObjectURL(selfieImage);
+      }
+      if (selectedIdImage) {
+        URL.revokeObjectURL(selectedIdImage);
+      }
+    };
+  }, [cameraStream, selfieImage, selectedIdImage]);
 
   return (
     <>
@@ -352,6 +651,18 @@ export default function CreateNFT() {
         animationProgress={animationProgress}
         onCancel={handleCancelDeployment}
         onReset={handleResetImage}
+        mintStatus={mintStatus}
+        txHash={txHash}
+      />
+      
+      {/* Camera Capture Component */}
+      <CameraCapture 
+        showCamera={showCamera}
+        cameraStream={cameraStream}
+        onCapture={handleCaptureImage}
+        onCancel={handleStopCamera}
+        videoRef={videoRef}
+        canvasRef={canvasRef}
       />
       
       <div className="mx-auto w-full sm:pt-0 lg:px-8 xl:px-10 2xl:px-0">
@@ -361,163 +672,67 @@ export default function CreateNFT() {
               Create Digital Identity
             </h2>
             <div className="flex items-center">
-              <WalletConnect onWalletChange={handleWalletChange} />
+              {!isConnected ? (
+                <Button 
+                  shape="rounded" 
+                  onClick={connect}
+                >
+                  Connect Wallet
+                </Button>
+              ) : (
+                <div className="text-sm font-medium text-gray-900 dark:text-white">
+                  {walletAddress && `${walletAddress.slice(0, 6)}...${walletAddress.slice(-4)}`}
+                </div>
+              )}
             </div>
           </div>
+        </div>
+        
+        {/* Progress tracking */}
+        <div className="mb-8">
+          <CreationProgress 
+            currentStep={currentStep}
+            overallProgress={overallProgress}
+          />
         </div>
 
         <div className="mb-8 grid grid-cols-1 gap-12 lg:grid-cols-3">
           <div className="lg:col-span-3">
-            {!selectedImage ? (
-              <div className="mb-8">
-                <InputLabel title="Upload ID Document" important />
-                <p className="mb-3 text-sm text-gray-500 dark:text-gray-400">
-                  Upload a driver's license, passport, or other government-issued ID
-                </p>
-                <input
-                  type="file"
-                  accept="image/*"
-                  onChange={handleImageSelect}
-                  className="block w-full text-sm text-gray-500
-                    file:mr-4 file:py-2 file:px-4
-                    file:rounded-full file:border-0
-                    file:text-sm file:font-semibold
-                    file:bg-gray-100 file:text-gray-700
-                    hover:file:bg-gray-200 dark:file:bg-gray-700 dark:file:text-gray-200
-                    dark:hover:file:bg-gray-600"
-                />
-              </div>
+            {!selectedIdImage ? (
+              <IdDocumentUploader
+                selectedIdImage={selectedIdImage}
+                isLoading={isLoading}
+                walletConnected={walletConnected}
+                progressMessage={progressMessage}
+                ocrError={ocrError}
+                onImageSelect={handleIdImageSelect}
+                onResetImage={handleResetImage}
+                onExtractInfo={handleExtractIDInformation}
+              />
             ) : extractedInfo ? (
-              <div className="mb-8">
-                <div className="mb-4 rounded-lg border border-gray-200 bg-white p-6 dark:border-gray-700 dark:bg-gray-800">
-                  <h3 className="mb-4 text-lg font-medium text-gray-900 dark:text-white">Extracted ID Information</h3>
-                  
-                  <div className="mb-6 grid grid-cols-1 gap-6 md:grid-cols-2">
-                    <div>
-                      <h4 className="mb-2 text-sm font-medium text-gray-500 dark:text-gray-400">Personal Details</h4>
-                      <div className="space-y-3">
-                        <div>
-                          <span className="block text-sm font-medium text-gray-500 dark:text-gray-400">Full Name</span>
-                          <span className="block text-base font-medium text-gray-900 dark:text-white">{extractedInfo.fullName}</span>
-                        </div>
-                        <div>
-                          <span className="block text-sm font-medium text-gray-500 dark:text-gray-400">Date of Birth</span>
-                          <span className="block text-base font-medium text-gray-900 dark:text-white">{extractedInfo.dateOfBirth}</span>
-                        </div>
-                        <div>
-                          <span className="block text-sm font-medium text-gray-500 dark:text-gray-400">Gender</span>
-                          <span className="block text-base font-medium text-gray-900 dark:text-white">{extractedInfo.gender}</span>
-                        </div>
-                        <div>
-                          <span className="block text-sm font-medium text-gray-500 dark:text-gray-400">ID Number</span>
-                          <span className="block text-base font-medium text-gray-900 dark:text-white">{extractedInfo.idNumber}</span>
-                        </div>
-                      </div>
-                    </div>
-                    
-                    <div>
-                      <h4 className="mb-2 text-sm font-medium text-gray-500 dark:text-gray-400">File Metadata</h4>
-                      <div className="space-y-3">
-                        <div>
-                          <span className="block text-sm font-medium text-gray-500 dark:text-gray-400">File Type</span>
-                          <span className="block text-base font-medium text-gray-900 dark:text-white">{extractedInfo.metadata.fileType}</span>
-                        </div>
-                        <div>
-                          <span className="block text-sm font-medium text-gray-500 dark:text-gray-400">File Size</span>
-                          <span className="block text-base font-medium text-gray-900 dark:text-white">{extractedInfo.metadata.fileSize}</span>
-                        </div>
-                        {extractedInfo.metadata.created && (
-                          <div>
-                            <span className="block text-sm font-medium text-gray-500 dark:text-gray-400">Created</span>
-                            <span className="block text-base font-medium text-gray-900 dark:text-white">{extractedInfo.metadata.created}</span>
-                          </div>
-                        )}
-                        {walletAddress && (
-                          <div>
-                            <span className="block text-sm font-medium text-gray-500 dark:text-gray-400">Wallet Address</span>
-                            <span className="block text-base font-medium text-gray-900 dark:text-white">
-                              {`${walletAddress.slice(0, 6)}...${walletAddress.slice(-4)}`}
-                            </span>
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                  </div>
-                  
-                  {/* Raw OCR Text */}
-                  <div className="mb-6">
-                    <details className="cursor-pointer">
-                      <summary className="text-sm font-medium text-gray-500 dark:text-gray-400">View Raw OCR Text</summary>
-                      <div className="mt-2 max-h-60 overflow-auto rounded bg-gray-50 p-3 text-xs dark:bg-gray-700">
-                        <pre className="whitespace-pre-wrap break-words text-gray-700 dark:text-gray-300">
-                          {extractedInfo.rawText || 'No text data available'}
-                        </pre>
-                      </div>
-                    </details>
-                  </div>
-                  
-                  <div className="flex items-center justify-between">
-                    <Button 
-                      shape="rounded" 
-                      onClick={handleDeployDID}
-                      disabled={!walletConnected}
-                    >
-                      {walletConnected ? "Deploy DID" : "Connect Wallet to Deploy"}
-                    </Button>
-                    <Button shape="rounded" variant="ghost" onClick={handleResetImage}>
-                      Start Over
-                    </Button>
-                  </div>
-                </div>
-              </div>
+              <IdInformationDisplay
+                extractedInfo={extractedInfo}
+                selectedIdImage={selectedIdImage}
+                selfieImage={selfieImage}
+                walletConnected={walletConnected}
+                walletAddress={walletAddress || undefined}
+                onStartCamera={handleStartCamera}
+                onResetImage={handleResetImage}
+                onDeployDID={handleDeployDID}
+                onUploadSelfie={handleUploadSelfie}
+                onResetSelfie={handleResetSelfie}
+              />
             ) : (
-              <div className="mb-8 flex flex-col">
-                <InputLabel title="Selected ID Document" />
-                <div className="mb-4 w-full overflow-hidden rounded-lg border border-gray-200 dark:border-gray-700">
-                  <img 
-                    src={selectedImage} 
-                    alt="ID Document" 
-                    className="w-full object-contain" 
-                    style={{ maxHeight: '400px' }}
-                  />
-                </div>
-                {!walletConnected && (
-                  <div className="mb-4 rounded-md bg-yellow-50 p-4 dark:bg-yellow-900/20">
-                    <div className="flex">
-                      <div className="flex-shrink-0">
-                        <Warning className="h-5 w-5 text-yellow-600 dark:text-yellow-500" />
-                      </div>
-                      <div className="ml-3">
-                        <p className="text-sm text-yellow-700 dark:text-yellow-400">
-                          Connect your wallet to extract ID information and create your digital identity.
-                        </p>
-                      </div>
-                    </div>
-                  </div>
-                )}
-                {ocrError && (
-                  <div className="mb-4 rounded-md bg-red-50 p-4 dark:bg-red-900/20">
-                    <p className="text-sm text-red-700 dark:text-red-400">{ocrError}</p>
-                  </div>
-                )}
-                <div className="flex gap-4">
-                  <Button 
-                    shape="rounded" 
-                    onClick={extractIDInformation}
-                    disabled={isLoading || !walletConnected}
-                  >
-                    {isLoading 
-                      ? progressMessage || "Processing..." 
-                      : !walletConnected 
-                        ? "Connect Wallet First" 
-                        : "Extract Information"
-                    }
-                  </Button>
-                  <Button shape="rounded" variant="ghost" onClick={handleResetImage}>
-                    Reselect Image
-                  </Button>
-                </div>
-              </div>
+              <IdDocumentUploader
+                selectedIdImage={selectedIdImage}
+                isLoading={isLoading}
+                walletConnected={walletConnected}
+                progressMessage={progressMessage}
+                ocrError={ocrError}
+                onImageSelect={handleIdImageSelect}
+                onResetImage={handleResetImage}
+                onExtractInfo={handleExtractIDInformation}
+              />
             )}
           </div>
         </div>

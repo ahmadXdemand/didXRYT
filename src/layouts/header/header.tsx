@@ -13,7 +13,7 @@ import { useDrawer } from '@/components/drawer-views/context';
 import routes from '@/config/routes';
 import { useLayout } from '@/lib/hooks/use-layout';
 import { LAYOUT_OPTIONS } from '@/lib/constants';
-import WalletConnect from '@/components/nft/wallet-connect';
+// import WalletConnect from '@/components/nft/wallet-connect';
 
 function NotificationButton() {
   const { layout } = useLayout();
@@ -40,7 +40,7 @@ function HeaderRightArea() {
   return (
     <div className="relative order-last flex shrink-0 items-center gap-4 sm:gap-6 lg:gap-8">
       <NotificationButton />
-      <WalletConnect />
+      {/* <WalletConnect /> */}
     </div>
   );
 }

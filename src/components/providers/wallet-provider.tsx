@@ -1,7 +1,6 @@
 'use client';
 
 import {
-  projectId,
   wagmiAdapter,
   wagmiMetaData,
 } from '@/app/shared/wagmi-config';
@@ -15,7 +14,6 @@ createAppKit({
   adapters: [wagmiAdapter],
   networks: [mainnet, arbitrum],
   metadata: wagmiMetaData,
-  projectId,
   features: {
     analytics: true,
   },
